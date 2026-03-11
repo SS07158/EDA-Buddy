@@ -518,10 +518,9 @@ def show_home_page():
         """)
 
 def show_upload_page():
-    """Display upload data page"""
+    """Display upload data page with better encoding handling"""
     st.markdown("<div class='subheader'>📤 Upload Your Data</div>", unsafe_allow_html=True)
     
-    # Upload options
     col1, col2 = st.columns(2)
     
     with col1:
@@ -533,27 +532,31 @@ def show_upload_page():
         
         if sample_choice != "None":
             if st.button("📥 Load Sample Data"):
-                if sample_choice == "Iris":
-                    from sklearn.datasets import load_iris
-                    iris = load_iris()
-                    st.session_state.df = pd.DataFrame(iris.data, columns=iris.feature_names)
-                    st.session_state.df['species'] = iris.target_names[iris.target]
-                elif sample_choice == "Titanic":
-                    st.session_state.df = pd.read_csv("https://raw.githubusercontent.com/pandas-dev/pandas/master/doc/data/titanic.csv")
-                elif sample_choice == "Student Performance":
-                    # Create synthetic student data
-                    np.random.seed(42)
-                    st.session_state.df = pd.DataFrame({
-                        'StudentID': range(1, 101),
-                        'Math': np.random.normal(75, 15, 100),
-                        'Science': np.random.normal(78, 12, 100),
-                        'English': np.random.normal(72, 18, 100),
-                        'AttendanceRate': np.random.uniform(70, 100, 100),
-                        'StudyHours': np.random.exponential(5, 100),
-                        'Grade': np.random.choice(['A', 'B', 'C', 'D'], 100)
-                    })
-                st.success("✅ Sample data loaded successfully!")
-                st.rerun()
+                try:
+                    if sample_choice == "Iris":
+                        from sklearn.datasets import load_iris
+                        iris = load_iris()
+                        st.session_state.df = pd.DataFrame(iris.data, columns=iris.feature_names)
+                        st.session_state.df['species'] = iris.target_names[iris.target]
+                    elif sample_choice == "Titanic":
+                        st.session_state.df = pd.read_csv(
+                            "https://raw.githubusercontent.com/pandas-dev/pandas/master/doc/data/titanic.csv"
+                        )
+                    elif sample_choice == "Student Performance":
+                        np.random.seed(42)
+                        st.session_state.df = pd.DataFrame({
+                            'StudentID': range(1, 101),
+                            'Math': np.random.normal(75, 15, 100),
+                            'Science': np.random.normal(78, 12, 100),
+                            'English': np.random.normal(72, 18, 100),
+                            'AttendanceRate': np.random.uniform(70, 100, 100),
+                            'StudyHours': np.random.exponential(5, 100),
+                            'Grade': np.random.choice(['A', 'B', 'C', 'D'], 100)
+                        })
+                    st.success("✅ Sample data loaded successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error loading sample: {e}")
     
     with col2:
         st.markdown("### Option 2: Upload Your File")
@@ -564,14 +567,28 @@ def show_upload_page():
         
         if uploaded_file is not None:
             try:
-                if uploaded_file.name.endswith('.csv'):
-                    st.session_state.df = pd.read_csv(uploaded_file)
+                from modules.data_loader import load_data
+                
+                # Use improved loader with encoding handling
+                df, message = load_data(uploaded_file)
+                
+                # Display status message
+                if df is not None:
+                    st.success(message)
+                    st.session_state.df = df
+                    st.rerun()
                 else:
-                    st.session_state.df = pd.read_excel(uploaded_file)
-                st.success(f"✅ File '{uploaded_file.name}' loaded successfully!")
-                st.rerun()
+                    st.error(message)
+            
             except Exception as e:
-                st.error(f"❌ Error loading file: {e}")
+                st.error(f"❌ Unexpected error: {str(e)}")
+                st.info("💡 Try these solutions:")
+                st.write("""
+                1. Save file as UTF-8 encoding in Excel
+                2. Try removing special characters from column names
+                3. Use CSV format instead of Excel
+                4. Report issue with sample file
+                """)
     
     # Display loaded data info
     if st.session_state.df is not None:
@@ -592,7 +609,7 @@ def show_upload_page():
         st.markdown("### 📋 Data Preview")
         st.dataframe(st.session_state.df.head(10), use_container_width=True)
         
-        # Column info
+        # Column info with encoding display
         st.markdown("### 📌 Column Information")
         col_info = pd.DataFrame({
             'Column': st.session_state.df.columns,
@@ -602,6 +619,13 @@ def show_upload_page():
             'Unique': [st.session_state.df[col].nunique() for col in st.session_state.df.columns]
         })
         st.dataframe(col_info, use_container_width=True)
+        
+        # Show encoding info
+        st.info("""
+        📝 **Encoding Detection:**
+        The system automatically detects and handles different file encodings
+        (UTF-8, Latin-1, etc.) to ensure compatibility.
+        """)
 
 def show_data_overview_page():
     """Display data overview page"""
@@ -1153,4 +1177,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
