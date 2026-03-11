@@ -1,109 +1,318 @@
-def show_upload_page():
-    """Display upload data page with better encoding handling"""
-    st.markdown("<div class='subheader'>📤 Upload Your Data</div>", unsafe_allow_html=True)
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import io
+import chardet
+
+class DataLoader:
+    """
+    Handles file loading with robust encoding detection and error handling
+    """
     
-    col1, col2 = st.columns(2)
+    # Common encodings to try in order
+    ENCODING_FALLBACKS = [
+        'utf-8',
+        'utf-8-sig',  # UTF-8 with BOM
+        'latin-1',    # ISO-8859-1 (Western European)
+        'cp1252',     # Windows Western European
+        'iso-8859-1',
+        'gb2312',     # Chinese
+        'gbk',        # Chinese
+        'big5',       # Traditional Chinese
+        'shift_jis',  # Japanese
+        'euc-kr',     # Korean
+        'utf-16',
+        'ascii'
+    ]
     
-    with col1:
-        st.markdown("### Option 1: Load Sample Data")
-        sample_choice = st.selectbox(
-            "Select a sample dataset:",
-            ["None", "Iris", "Titanic", "Student Performance"]
-        )
+    def __init__(self):
+        self.df = None
+        self.file_info = {}
+        self.detected_encoding = None
+    
+    def detect_encoding(self, file_path_or_bytes):
+        """
+        Detect file encoding using chardet library
+        Returns: encoding name as string
+        """
+        try:
+            # Read sample of file
+            if isinstance(file_path_or_bytes, bytes):
+                sample = file_path_or_bytes[:10000]  # First 10KB
+            else:
+                with open(file_path_or_bytes, 'rb') as f:
+                    sample = f.read(10000)
+            
+            # Detect encoding
+            detection = chardet.detect(sample)
+            encoding = detection.get('encoding')
+            confidence = detection.get('confidence', 0)
+            
+            print(f"🔍 Detected encoding: {encoding} (confidence: {confidence:.2%})")
+            
+            return encoding if confidence > 0.7 else 'utf-8'
+        except Exception as e:
+            print(f"⚠️ Encoding detection failed: {e}")
+            return 'utf-8'
+    
+    def load_csv_with_fallback(self, file_path_or_bytes, filename=""):
+        """
+        Load CSV with automatic encoding detection and fallback
+        """
+        errors = []
         
-        if sample_choice != "None":
-            if st.button("📥 Load Sample Data"):
-                try:
-                    if sample_choice == "Iris":
-                        from sklearn.datasets import load_iris
-                        iris = load_iris()
-                        st.session_state.df = pd.DataFrame(iris.data, columns=iris.feature_names)
-                        st.session_state.df['species'] = iris.target_names[iris.target]
-                    elif sample_choice == "Titanic":
-                        st.session_state.df = pd.read_csv(
-                            "https://raw.githubusercontent.com/pandas-dev/pandas/master/doc/data/titanic.csv"
-                        )
-                    elif sample_choice == "Student Performance":
-                        np.random.seed(42)
-                        st.session_state.df = pd.DataFrame({
-                            'StudentID': range(1, 101),
-                            'Math': np.random.normal(75, 15, 100),
-                            'Science': np.random.normal(78, 12, 100),
-                            'English': np.random.normal(72, 18, 100),
-                            'AttendanceRate': np.random.uniform(70, 100, 100),
-                            'StudyHours': np.random.exponential(5, 100),
-                            'Grade': np.random.choice(['A', 'B', 'C', 'D'], 100)
-                        })
-                    st.success("✅ Sample data loaded successfully!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error loading sample: {e}")
-    
-    with col2:
-        st.markdown("### Option 2: Upload Your File")
-        uploaded_file = st.file_uploader(
-            "Choose a CSV or Excel file",
-            type=['csv', 'xlsx', 'xls']
-        )
+        # Try detected encoding first
+        detected = self.detect_encoding(file_path_or_bytes)
+        encoding_list = [detected] + [enc for enc in self.ENCODING_FALLBACKS if enc != detected]
         
-        if uploaded_file is not None:
+        for encoding in encoding_list:
             try:
-                from modules.data_loader import load_data
-                
-                # Use improved loader with encoding handling
-                df, message = load_data(uploaded_file)
-                
-                # Display status message
-                if df is not None:
-                    st.success(message)
-                    st.session_state.df = df
-                    st.rerun()
+                if isinstance(file_path_or_bytes, bytes):
+                    self.df = pd.read_csv(
+                        io.BytesIO(file_path_or_bytes),
+                        encoding=encoding,
+                        on_bad_lines='skip',  # Skip lines with errors
+                        engine='python'  # More flexible parser
+                    )
                 else:
-                    st.error(message)
+                    self.df = pd.read_csv(
+                        file_path_or_bytes,
+                        encoding=encoding,
+                        on_bad_lines='skip',
+                        engine='python'
+                    )
+                
+                self.detected_encoding = encoding
+                print(f"✅ Successfully loaded with encoding: {encoding}")
+                return True, f"CSV loaded with {encoding} encoding"
+            
+            except UnicodeDecodeError as e:
+                errors.append(f"{encoding}: {str(e)[:50]}")
+                continue
+            except pd.errors.ParserError as e:
+                errors.append(f"{encoding}: Parser error")
+                continue
+            except Exception as e:
+                errors.append(f"{encoding}: {str(e)[:50]}")
+                continue
+        
+        # All encodings failed
+        return False, f"Could not decode file. Tried: {', '.join(encoding_list[:3])}"
+    
+    def load_csv_with_encoding_fix(self, file_path_or_bytes, filename=""):
+        """
+        Load CSV with specific encoding handling for common issues
+        """
+        try:
+            # Try UTF-8 first (most common)
+            if isinstance(file_path_or_bytes, bytes):
+                self.df = pd.read_csv(
+                    io.BytesIO(file_path_or_bytes),
+                    encoding='utf-8-sig',  # Handles BOM
+                    on_bad_lines='warn'
+                )
+            else:
+                self.df = pd.read_csv(
+                    file_path_or_bytes,
+                    encoding='utf-8-sig',
+                    on_bad_lines='warn'
+                )
+            
+            self.detected_encoding = 'utf-8-sig'
+            return True, "CSV loaded successfully (UTF-8)"
+        
+        except UnicodeDecodeError:
+            # Fallback to latin-1 (most robust)
+            try:
+                if isinstance(file_path_or_bytes, bytes):
+                    self.df = pd.read_csv(
+                        io.BytesIO(file_path_or_bytes),
+                        encoding='latin-1',
+                        on_bad_lines='skip'
+                    )
+                else:
+                    self.df = pd.read_csv(
+                        file_path_or_bytes,
+                        encoding='latin-1',
+                        on_bad_lines='skip'
+                    )
+                
+                self.detected_encoding = 'latin-1'
+                return True, "CSV loaded with latin-1 encoding (some characters may be replaced)"
             
             except Exception as e:
-                st.error(f"❌ Unexpected error: {str(e)}")
-                st.info("💡 Try these solutions:")
-                st.write("""
-                1. Save file as UTF-8 encoding in Excel
-                2. Try removing special characters from column names
-                3. Use CSV format instead of Excel
-                4. Report issue with sample file
-                """)
+                return False, f"Failed to load CSV: {str(e)}"
     
-    # Display loaded data info
-    if st.session_state.df is not None:
-        st.markdown("---")
-        st.markdown("### ✅ Data Loaded Successfully!")
+    def clean_dataframe_encoding(self):
+        """
+        Clean dataframe from encoding artifacts
+        - Remove BOM characters
+        - Fix garbled text
+        - Clean column names
+        """
+        if self.df is None:
+            return
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Rows", st.session_state.df.shape[0])
-        with col2:
-            st.metric("Columns", st.session_state.df.shape[1])
-        with col3:
-            st.metric("Memory", f"{st.session_state.df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
-        with col4:
-            st.metric("Missing Values", st.session_state.df.isnull().sum().sum())
+        try:
+            # Fix column names (remove BOM if present)
+            self.df.columns = self.df.columns.str.replace('ï»¿', '')  # Common BOM artifact
+            self.df.columns = self.df.columns.str.strip()  # Remove whitespace
+            
+            # Fix string columns
+            for col in self.df.columns:
+                if self.df[col].dtype == 'object':
+                    # Remove BOM from values
+                    self.df[col] = self.df[col].apply(
+                        lambda x: str(x).replace('ï»¿', '') if pd.notna(x) else x
+                    )
+                    # Clean whitespace
+                    self.df[col] = self.df[col].apply(
+                        lambda x: str(x).strip() if pd.notna(x) else x
+                    )
+            
+            print("✅ DataFrame cleaned from encoding artifacts")
+        except Exception as e:
+            print(f"⚠️ Error cleaning dataframe: {e}")
+    
+    def load_csv(self, file_path_or_bytes, filename=""):
+        """
+        Main method to load CSV file with comprehensive error handling
+        """
+        try:
+            # First attempt: Use fallback method
+            success, message = self.load_csv_with_fallback(file_path_or_bytes, filename)
+            
+            if not success:
+                return False, message
+            
+            # Clean encoding artifacts
+            self.clean_dataframe_encoding()
+            
+            # Store file info
+            self.file_info = {
+                'source': filename or 'uploaded_file',
+                'format': 'csv',
+                'loaded_at': datetime.now(),
+                'encoding': self.detected_encoding,
+                'rows': len(self.df),
+                'columns': len(self.df.columns)
+            }
+            
+            return True, f"✅ CSV loaded successfully with {self.detected_encoding} encoding"
         
-        # Preview
-        st.markdown("### 📋 Data Preview")
-        st.dataframe(st.session_state.df.head(10), use_container_width=True)
+        except Exception as e:
+            return False, f"❌ Error loading CSV: {str(e)}"
+    
+    def load_excel(self, file_path_or_bytes, filename=""):
+        """
+        Load Excel file with error handling
+        Excel files are less prone to encoding issues but handle errors anyway
+        """
+        try:
+            if isinstance(file_path_or_bytes, bytes):
+                self.df = pd.read_excel(
+                    io.BytesIO(file_path_or_bytes),
+                    engine='openpyxl'  # More robust than default
+                )
+            else:
+                self.df = pd.read_excel(
+                    file_path_or_bytes,
+                    engine='openpyxl'
+                )
+            
+            # Clean any encoding issues
+            self.clean_dataframe_encoding()
+            
+            self.file_info = {
+                'source': filename or 'uploaded_file',
+                'format': 'excel',
+                'loaded_at': datetime.now(),
+                'encoding': 'xlsx',
+                'rows': len(self.df),
+                'columns': len(self.df.columns)
+            }
+            
+            return True, "✅ Excel file loaded successfully"
         
-        # Column info with encoding display
-        st.markdown("### 📌 Column Information")
-        col_info = pd.DataFrame({
-            'Column': st.session_state.df.columns,
-            'Type': [st.session_state.df[col].dtype for col in st.session_state.df.columns],
-            'Non-Null': [st.session_state.df[col].notna().sum() for col in st.session_state.df.columns],
-            'Null': [st.session_state.df[col].isna().sum() for col in st.session_state.df.columns],
-            'Unique': [st.session_state.df[col].nunique() for col in st.session_state.df.columns]
-        })
-        st.dataframe(col_info, use_container_width=True)
+        except Exception as e:
+            return False, f"❌ Error loading Excel: {str(e)}"
+    
+    def validate_dataframe(self):
+        """
+        Validate dataframe integrity after loading
+        """
+        if self.df is None:
+            return False, "DataFrame is empty"
         
-        # Show encoding info
-        st.info("""
-        📝 **Encoding Detection:**
-        The system automatically detects and handles different file encodings
-        (UTF-8, Latin-1, etc.) to ensure compatibility.
-        """)
+        issues = []
+        
+        # Check for completely empty columns
+        empty_cols = self.df.columns[self.df.isna().all()].tolist()
+        if empty_cols:
+            issues.append(f"⚠️ Empty columns: {', '.join(empty_cols)}")
+            # Remove empty columns
+            self.df = self.df.dropna(axis=1, how='all')
+        
+        # Check for completely empty rows
+        empty_rows = len(self.df[self.df.isna().all(axis=1)])
+        if empty_rows > 0:
+            issues.append(f"⚠️ Found {empty_rows} completely empty rows")
+            # Remove empty rows
+            self.df = self.df.dropna(how='all')
+        
+        # Check for duplicate columns
+        duplicate_cols = self.df.columns[self.df.columns.duplicated()].tolist()
+        if duplicate_cols:
+            issues.append(f"⚠️ Duplicate columns found: {set(duplicate_cols)}")
+        
+        if issues:
+            return True, "\n".join(issues)  # Return warnings but still valid
+        
+        return True, "✅ DataFrame validation passed"
+    
+    def get_data_info(self):
+        """Get basic information about the dataset"""
+        if self.df is None:
+            return None
+        
+        return {
+            'rows': self.df.shape[0],
+            'columns': self.df.shape[1],
+            'column_names': self.df.columns.tolist(),
+            'data_types': self.df.dtypes.to_dict(),
+            'memory_usage': self.df.memory_usage(deep=True).sum() / 1024**2,
+            'encoding': self.detected_encoding,
+            'file_info': self.file_info
+        }
+
+
+def load_data(uploaded_file):
+    """
+    Wrapper function for Streamlit file uploads
+    """
+    if uploaded_file is None:
+        return None, None
+    
+    loader = DataLoader()
+    
+    # Read file bytes
+    file_bytes = uploaded_file.read()
+    
+    # Determine file type
+    if uploaded_file.name.endswith('.csv'):
+        success, message = loader.load_csv(file_bytes, uploaded_file.name)
+    elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+        success, message = loader.load_excel(file_bytes, uploaded_file.name)
+    else:
+        return None, f"❌ Unsupported file format: {uploaded_file.name}"
+    
+    if not success:
+        return None, message
+    
+    # Validate dataframe
+    valid, validation_msg = loader.validate_dataframe()
+    
+    if valid:
+        return loader.df, f"✅ {message}\n{validation_msg}"
+    else:
+        return loader.df, f"⚠️ {message}\n{validation_msg}"
